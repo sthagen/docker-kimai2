@@ -13,7 +13,7 @@ ARG BASE="fpm-alpine"
 ###########################
 
 # full kimai source
-FROM alpine:3.11 AS git-dev
+FROM alpine:3.12 AS git-dev
 ARG KIMAI="1.8"
 RUN apk add --no-cache git && \
     git clone --depth 1 --branch ${KIMAI} https://github.com/kevinpapst/kimai2.git /opt/kimai
@@ -24,9 +24,9 @@ WORKDIR /opt/kimai
 RUN rm -r tests
 
 # composer with prestissimo (faster deps install)
-FROM composer:1.9 AS composer
+FROM composer:1.10 AS composer
 RUN mkdir /opt/kimai && \
-    composer require --working-dir=/opt/kimai hirak/prestissimo
+    composer --no-ansi require --working-dir=/opt/kimai hirak/prestissimo
 
 
 
@@ -35,7 +35,7 @@ RUN mkdir /opt/kimai && \
 ###########################
 
 #fpm alpine php extension base
-FROM php:7.4.4-fpm-alpine3.11 AS fpm-alpine-php-ext-base
+FROM php:7.4.11-fpm-alpine3.12 AS fpm-alpine-php-ext-base
 RUN apk add --no-cache \
     # build-tools
     autoconf \
@@ -70,7 +70,7 @@ RUN apk add --no-cache \
 
 
 # apache debian php extension base
-FROM php:7.4.4-apache-buster AS apache-debian-php-ext-base
+FROM php:7.4.11-apache-buster AS apache-debian-php-ext-base
 RUN apt-get update
 RUN apt-get install -y \
         libldap2-dev \
@@ -115,7 +115,7 @@ RUN docker-php-ext-install -j$(nproc) xsl
 ###########################
 
 # fpm-alpine base build
-FROM php:7.4.4-fpm-alpine3.11 AS fpm-alpine-base
+FROM php:7.4.11-fpm-alpine3.12 AS fpm-alpine-base
 RUN apk add --no-cache \
         bash \
         freetype \
@@ -124,10 +124,18 @@ RUN apk add --no-cache \
         libldap \
         libpng \
         libzip \
-        libxslt-dev && \
+        libxslt-dev \
+        fcgi && \
     touch /use_fpm
 
 EXPOSE 9000
+
+HEALTHCHECK --interval=20s --timeout=10s --retries=3 \
+    CMD \
+    SCRIPT_NAME=/ping \
+    SCRIPT_FILENAME=/ping \
+    REQUEST_METHOD=GET \
+    cgi-fcgi -bind -connect 127.0.0.1:9000 || exit 1
 
 
 
@@ -135,7 +143,7 @@ EXPOSE 9000
 # apache-debian base build
 ###########################
 
-FROM php:7.4.4-apache-buster AS apache-debian-base
+FROM php:7.4.11-apache-buster AS apache-debian-base
 COPY 000-default.conf /etc/apache2/sites-available/000-default.conf
 RUN apt-get update && \
     apt-get install -y \
@@ -151,6 +159,9 @@ RUN apt-get update && \
     touch /use_apache
 
 EXPOSE 8001
+
+HEALTHCHECK --interval=20s --timeout=10s --retries=3 \
+    CMD curl -f http://127.0.0.1:8001 || exit 1
 
 
 
@@ -224,14 +235,16 @@ ENTRYPOINT /startup.sh
 FROM base AS dev
 # copy kimai develop source
 COPY --from=git-dev --chown=www-data:www-data /opt/kimai /opt/kimai
+COPY monolog-dev.yaml /opt/kimai/config/packages/dev/monolog.yaml
 # do the composer deps installation
 RUN export COMPOSER_HOME=/composer && \
-    composer install --working-dir=/opt/kimai --optimize-autoloader && \
-    composer clearcache && \
-    composer require --working-dir=/opt/kimai laminas/laminas-ldap && \
+    composer --no-ansi install --working-dir=/opt/kimai --optimize-autoloader && \
+    composer --no-ansi clearcache && \
+    composer --no-ansi require --working-dir=/opt/kimai laminas/laminas-ldap && \
     chown -R www-data:www-data /opt/kimai && \
-    sed "s/128M/256M/g" /usr/local/etc/php/php.ini-development > /usr/local/etc/php/php.ini
-COPY monolog-dev.yaml /opt/kimai/config/packages/dev/monolog.yaml
+    sed "s/128M/256M/g" /usr/local/etc/php/php.ini-development > /usr/local/etc/php/php.ini && \
+    sed "s/128M/-1/g" /usr/local/etc/php/php.ini-development > /opt/kimai/php-cli.ini && \
+    sed -i "s/env php/env -S php -c \/opt\/kimai\/php-cli.ini/g" /opt/kimai/bin/console
 ENV APP_ENV=dev
 USER www-data
 
@@ -239,12 +252,13 @@ USER www-data
 FROM base AS prod
 # copy kimai production source
 COPY --from=git-prod --chown=www-data:www-data /opt/kimai /opt/kimai
+COPY monolog-prod.yaml /opt/kimai/config/packages/prod/monolog.yaml
 # do the composer deps installation
 RUN export COMPOSER_HOME=/composer && \
-    composer install --working-dir=/opt/kimai --no-dev --optimize-autoloader && \
-    composer clearcache && \
-    composer require --working-dir=/opt/kimai laminas/laminas-ldap && \
+    composer --no-ansi install --working-dir=/opt/kimai --no-dev --optimize-autoloader && \
+    composer --no-ansi clearcache && \
+    composer --no-ansi require --working-dir=/opt/kimai laminas/laminas-ldap && \
+    cp /usr/local/etc/php/php.ini-production /usr/local/etc/php/php.ini && \
     chown -R www-data:www-data /opt/kimai
-COPY monolog-prod.yaml /opt/kimai/config/packages/prod/monolog.yaml
 ENV APP_ENV=prod
 USER www-data
